@@ -20,8 +20,19 @@ RUN apt-get update && apt-get --no-install-recommends install -y git binutils \
   binutils-s390x-linux-gnu \
   binutils-powerpc64le-linux-gnu \
   binutils-mips64el-linux-gnuabi64 \
-  binutils-mips64-linux-gnuabi64
+  binutils-mips64-linux-gnuabi64 \
+  binutils-mips-linux-gnu \
+  binutils-mipsel-linux-gnu
+
 WORKDIR /src
+
+FROM base AS exit-mips
+COPY util/archutil/fixtures/exit.mips.s .
+RUN mips-linux-gnu-as --noexecstack -o exit.o exit.mips.s && mips-linux-gnu-ld -o exit -s exit.o && mips-linux-gnu-strip --strip-unneeded exit
+
+FROM base AS exit-mipsle
+COPY util/archutil/fixtures/exit.mipsle.s .
+RUN mipsel-linux-gnu-as --noexecstack -o exit.o exit.mipsle.s && mipsel-linux-gnu-ld -o exit -s exit.o && mipsel-linux-gnu-strip --strip-unneeded exit
 
 FROM base AS exit-amd64
 COPY util/archutil/fixtures/exit.amd64.S .
@@ -84,6 +95,8 @@ COPY --from=exit-ppc64 /src/exit ppc64
 COPY --from=exit-ppc64le /src/exit ppc64le
 COPY --from=exit-mips64le /src/exit mips64le
 COPY --from=exit-mips64 /src/exit mips64
+COPY --from=exit-mips /src/exit mips
+COPY --from=exit-mipsle /src/exit mipsle
 COPY --from=exit-loong64 / /
 
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS generate
@@ -103,7 +116,9 @@ RUN --mount=type=bind,target=.,rw \
     bin/archutil/ppc64 \
     bin/archutil/ppc64le \
     bin/archutil/mips64le \
-    bin/archutil/mips64
+    bin/archutil/mips64 \
+    bin/archutil/mips \
+    bin/archutil/mipsle
   [ "${BUILD_LOONG64}" = "unsupported" ] || go run ./util/archutil/generate.go bin/archutil/loong64
   tree -nh bin/archutil
   cp bin/archutil/*_binary.go /out

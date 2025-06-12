@@ -75,6 +75,16 @@ func SupportedPlatforms(noCache bool) []ocispecs.Platform {
 			arr = append(arr, linux(p))
 		}
 	}
+	if p := "mips"; def.Architecture != p {
+		if _, err := mipsSupported(); err == nil {
+			arr = append(arr, linux(p))
+		}
+	}
+	if p := "mipsle"; def.Architecture != p {
+		if _, err := mipsleSupported(); err == nil {
+			arr = append(arr, linux(p))
+		}
+	}
 	if p := "mips64le"; def.Architecture != p {
 		if _, err := mips64leSupported(); err == nil {
 			arr = append(arr, linux(p))
@@ -143,6 +153,16 @@ func WarnIfUnsupported(pfs []ocispecs.Platform) {
 			}
 			if p.Architecture == "386" {
 				if _, err := i386Supported(); err != nil {
+					printPlatformWarning(p, err)
+				}
+			}
+			if p.Architecture == "mips" {
+				if _, err := mipsSupported(); err != nil {
+					printPlatformWarning(p, err)
+				}
+			}
+			if p.Architecture == "mipsle" {
+				if _, err := mipsleSupported(); err != nil {
 					printPlatformWarning(p, err)
 				}
 			}

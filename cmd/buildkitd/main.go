@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"os"
@@ -20,7 +21,6 @@ import (
 	"github.com/containerd/platforms"
 	sddaemon "github.com/coreos/go-systemd/v22/daemon"
 	"github.com/gofrs/flock"
-	"github.com/hashicorp/go-multierror"
 	"github.com/moby/buildkit/cache/remotecache"
 	"github.com/moby/buildkit/cache/remotecache/azblob"
 	"github.com/moby/buildkit/cache/remotecache/gha"
@@ -45,6 +45,7 @@ import (
 	"github.com/moby/buildkit/util/appdefaults"
 	"github.com/moby/buildkit/util/archutil"
 	"github.com/moby/buildkit/util/bklog"
+	"github.com/moby/buildkit/util/cachedigest"
 	"github.com/moby/buildkit/util/db/boltutil"
 	"github.com/moby/buildkit/util/disk"
 	"github.com/moby/buildkit/util/grpcerrors"
@@ -211,7 +212,7 @@ func main() {
 		},
 		cli.StringSliceFlag{
 			Name:  "allow-insecure-entitlement",
-			Usage: "allows insecure entitlements e.g. network.host, security.insecure",
+			Usage: "allows insecure entitlements e.g. network.host, security.insecure, device",
 		},
 		cli.StringFlag{
 			Name:  "otel-socket-path",
@@ -224,6 +225,10 @@ func main() {
 		cli.StringSliceFlag{
 			Name:  "cdi-spec-dir",
 			Usage: "list of directories to scan for CDI spec files",
+		},
+		cli.BoolFlag{
+			Name:  "save-cache-debug",
+			Usage: "enable saving cache debug info",
 		},
 	)
 	app.Flags = append(app.Flags, appFlags...)
@@ -345,6 +350,15 @@ func main() {
 			return err
 		}
 
+		if c.GlobalBool("save-cache-debug") {
+			db, err := cachedigest.NewDB(filepath.Join(cfg.Root, "cache-debug.db"))
+			if err != nil {
+				return errors.Wrap(err, "failed to create cache debug db")
+			}
+			cachedigest.SetDefaultDB(db)
+			defer db.Close()
+		}
+
 		controller, err := newController(ctx, c, &cfg)
 		if err != nil {
 			return err
@@ -363,6 +377,8 @@ func main() {
 				case "security.insecure":
 					cfg.Entitlements = append(cfg.Entitlements, e)
 				case "network.host":
+					cfg.Entitlements = append(cfg.Entitlements, e)
+				case "device":
 					cfg.Entitlements = append(cfg.Entitlements, e)
 				default:
 					return errors.Errorf("invalid entitlement : %s", e)
@@ -399,12 +415,13 @@ func main() {
 	}
 
 	app.After = func(_ *cli.Context) (err error) {
+		var errs []error
 		for _, c := range closers {
 			if e := c(context.TODO()); e != nil {
-				err = multierror.Append(err, e)
+				errs = append(errs, e)
 			}
 		}
-		return err
+		return stderrors.Join(errs...)
 	}
 
 	profiler.Attach(app)
@@ -809,6 +826,7 @@ func newController(ctx context.Context, c *cli.Context, cfg *config.Config) (*co
 	if err != nil {
 		return nil, err
 	}
+	cacheStoreForDebug = cacheStorage
 
 	historyDB, err := boltutil.Open(filepath.Join(cfg.Root, "history.db"), 0600, nil)
 	if err != nil {
@@ -842,6 +860,11 @@ func newController(ctx context.Context, c *cli.Context, cfg *config.Config) (*co
 		cfg.Entitlements = append(cfg.Entitlements, "device")
 	}
 
+	provenanceEnv, err := loadProvenanceEnv(cfg.ProvenanceEnvDir)
+	if err != nil {
+		return nil, err
+	}
+
 	return control.NewController(control.Opt{
 		SessionManager:            sessionManager,
 		WorkerController:          wc,
@@ -858,6 +881,7 @@ func newController(ctx context.Context, c *cli.Context, cfg *config.Config) (*co
 		HistoryConfig:             cfg.History,
 		GarbageCollect:            w.GarbageCollect,
 		GracefulStop:              ctx.Done(),
+		ProvenanceEnv:             provenanceEnv,
 	})
 }
 

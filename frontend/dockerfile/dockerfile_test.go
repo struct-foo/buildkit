@@ -84,6 +84,7 @@ var allTests = integration.TestFuncs(
 	testDockerfileADDFromURL,
 	testDockerfileAddArchive,
 	testDockerfileAddChownArchive,
+	testDockerfileCopyFromArgs,
 	testDockerfileScratchConfig,
 	testExportedHistory,
 	testExportedHistoryFlattenArgs,
@@ -93,7 +94,8 @@ var allTests = integration.TestFuncs(
 	testCacheReleased,
 	testDockerignore,
 	testDockerignoreInvalid,
-	testDockerfileFromGit,
+	testDockerfileFromGitSHA1,
+	testDockerfileFromGitSHA256,
 	testMultiStageImplicitFrom,
 	testMultiStageCaseInsensitive,
 	testLabels,
@@ -189,17 +191,6 @@ var allTests = integration.TestFuncs(
 	testDockerfileAddChownExpand,
 	testSourceDateEpochWithoutExporter,
 	testSBOMScannerImage,
-	testProvenanceAttestation,
-	testGitProvenanceAttestation,
-	testMultiPlatformProvenance,
-	testClientFrontendProvenance,
-	testClientLLBProvenance,
-	testSecretSSHProvenance,
-	testOCILayoutProvenance,
-	testNilProvenance,
-	testDuplicatePlatformProvenance,
-	testDockerIgnoreMissingProvenance,
-	testCommandSourceMapping,
 	testSBOMScannerArgs,
 	testMultiNilRefsOCIExporter,
 	testNilContextInSolveGateway,
@@ -306,6 +297,11 @@ func TestIntegration(t *testing.T) {
 		integration.WithMatrix("network.host", map[string]any{
 			"granted": networkHostGranted,
 			"denied":  networkHostDenied,
+		}))...)
+
+	integration.Run(t, integration.TestFuncs(testProvenanceAttestation), append(opts,
+		integration.WithMatrix("env", map[string]any{
+			"simple": provenanceEnvSimpleConfig,
 		}))...)
 }
 
@@ -3576,6 +3572,34 @@ COPY foo /symlink/
 	require.Equal(t, expectedContent, dt)
 }
 
+func testDockerfileCopyFromArgs(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`
+FROM scratch
+COPY --from=$FOO . .
+`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "variable expansion is not supported for --from, define a new stage with FROM using ARG from global scope as a workaround")
+}
+
 func testDockerfileScratchConfig(t *testing.T, sb integration.Sandbox) {
 	integration.SkipOnPlatform(t, "windows")
 	cdAddress := sb.ContainerdAddress()
@@ -3892,6 +3916,7 @@ COPY --from=base foo2 foo3
 WORKDIR /
 RUN echo bar > foo4
 RUN ["ls"]
+EXPOSE 2375 5000 1234/udp
 `)
 
 	dir := integration.Tmpdir(
@@ -3938,7 +3963,7 @@ RUN ["ls"]
 	// this depends on busybox. should be ok after freezing images
 	require.Equal(t, 4, len(ociimg.RootFS.DiffIDs))
 
-	require.Equal(t, 7, len(ociimg.History))
+	require.Equal(t, 8, len(ociimg.History))
 	require.Contains(t, ociimg.History[2].CreatedBy, "lbl=val")
 	require.Equal(t, true, ociimg.History[2].EmptyLayer)
 	require.NotNil(t, ociimg.History[2].Created)
@@ -3954,6 +3979,9 @@ RUN ["ls"]
 	require.Contains(t, ociimg.History[6].CreatedBy, "RUN ls")
 	require.Equal(t, false, ociimg.History[6].EmptyLayer)
 	require.NotNil(t, ociimg.History[6].Created)
+	require.Contains(t, ociimg.History[7].CreatedBy, "EXPOSE [1234/udp 2375/tcp 5000/tcp]")
+	require.Equal(t, true, ociimg.History[7].EmptyLayer)
+	require.NotNil(t, ociimg.History[7].Created)
 }
 
 // moby/buildkit#5505
@@ -4790,7 +4818,15 @@ ADD --chmod=10000 foo /
 	require.ErrorContains(t, err, "invalid chmod parameter: '10000'. it should be octal string and between 0 and 07777")
 }
 
-func testDockerfileFromGit(t *testing.T, sb integration.Sandbox) {
+func testDockerfileFromGitSHA1(t *testing.T, sb integration.Sandbox) {
+	testDockerfileFromGit(t, sb, "sha1")
+}
+
+func testDockerfileFromGitSHA256(t *testing.T, sb integration.Sandbox) {
+	testDockerfileFromGit(t, sb, "sha256")
+}
+
+func testDockerfileFromGit(t *testing.T, sb integration.Sandbox, format string) {
 	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
 
@@ -4806,8 +4842,12 @@ COPY --from=build foo bar
 	err := os.WriteFile(filepath.Join(gitDir, "Dockerfile"), []byte(dockerfile), 0600)
 	require.NoError(t, err)
 
+	initOptions := ""
+	if format == "sha256" {
+		initOptions = " --object-format=sha256"
+	}
 	err = runShell(gitDir,
-		"git init",
+		"git init"+initOptions,
 		"git config --local user.email test",
 		"git config --local user.name test",
 		"git add Dockerfile",
@@ -10355,14 +10395,14 @@ func (nopWriteCloser) Close() error { return nil }
 
 type secModeSandbox struct{}
 
-func (*secModeSandbox) UpdateConfigFile(in string) string {
-	return in
+func (*secModeSandbox) UpdateConfigFile(in string) (string, func() error) {
+	return in, nil
 }
 
 type secModeInsecure struct{}
 
-func (*secModeInsecure) UpdateConfigFile(in string) string {
-	return in + "\n\ninsecure-entitlements = [\"security.insecure\"]\n"
+func (*secModeInsecure) UpdateConfigFile(in string) (string, func() error) {
+	return in + "\n\ninsecure-entitlements = [\"security.insecure\"]\n", nil
 }
 
 var (
@@ -10372,14 +10412,14 @@ var (
 
 type networkModeHost struct{}
 
-func (*networkModeHost) UpdateConfigFile(in string) string {
-	return in + "\n\ninsecure-entitlements = [\"network.host\"]\n"
+func (*networkModeHost) UpdateConfigFile(in string) (string, func() error) {
+	return in + "\n\ninsecure-entitlements = [\"network.host\"]\n", nil
 }
 
 type networkModeSandbox struct{}
 
-func (*networkModeSandbox) UpdateConfigFile(in string) string {
-	return in
+func (*networkModeSandbox) UpdateConfigFile(in string) (string, func() error) {
+	return in, nil
 }
 
 var (

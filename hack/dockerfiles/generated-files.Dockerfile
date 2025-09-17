@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile-upstream:master
 
-ARG GO_VERSION=1.24
+ARG GO_VERSION=1.25
 ARG DEBIAN_VERSION=bookworm
 ARG PROTOC_VERSION=3.11.4
 ARG PROTOC_GOOGLEAPIS_VERSION=2af421884dd468d565137215c946ebe4e245ae26
@@ -65,7 +65,7 @@ RUN --mount=type=bind,source=go.mod,target=/app/go.mod \
     --mount=type=bind,source=go.sum,target=/app/go.sum \
     --mount=type=cache,target=/root/.cache \
     --mount=type=cache,target=/go/pkg/mod \
-  go install \
+  go install tool \
     github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto \
     google.golang.org/grpc/cmd/protoc-gen-go-grpc \
     google.golang.org/protobuf/cmd/protoc-gen-go

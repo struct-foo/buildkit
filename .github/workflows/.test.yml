@@ -31,7 +31,7 @@ on:
         type: string
 
 env:
-  GO_VERSION: "1.24"
+  GO_VERSION: "1.25"
   SETUP_BUILDX_VERSION: "edge"
   SETUP_BUILDKIT_IMAGE: "moby/buildkit:latest"
 
@@ -61,7 +61,7 @@ jobs:
       -
         name: Set outputs
         id: set
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const yaml = require('js-yaml');
@@ -137,7 +137,7 @@ jobs:
           echo "TESTFLAGS=${testFlags}" >> $GITHUB_ENV
       -
         name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       -
         name: Expose GitHub Runtime
         uses: crazy-max/ghaction-github-runtime@v3

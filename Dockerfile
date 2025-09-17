@@ -1,32 +1,32 @@
 # syntax=docker/dockerfile-upstream:master
 
 ARG RUNC_VERSION=v1.3.0
-ARG CONTAINERD_VERSION=v2.1.1
+ARG CONTAINERD_VERSION=v2.1.4
 # CONTAINERD_ALT_VERSION_... defines fallback containerd version for integration tests
-ARG CONTAINERD_ALT_VERSION_20=v2.0.5
-ARG CONTAINERD_ALT_VERSION_17=v1.7.27
+ARG CONTAINERD_ALT_VERSION_20=v2.0.6
+ARG CONTAINERD_ALT_VERSION_17=v1.7.28
 ARG REGISTRY_VERSION=v2.8.3
 ARG ROOTLESSKIT_VERSION=v2.3.5
-ARG CNI_VERSION=v1.7.1
+ARG CNI_VERSION=v1.8.0
 ARG STARGZ_SNAPSHOTTER_VERSION=v0.15.1
 ARG NERDCTL_VERSION=v2.1.2
 ARG DNSNAME_VERSION=v1.3.1
 ARG NYDUS_VERSION=v2.2.4
-ARG MINIO_VERSION=RELEASE.2022-05-03T20-36-08Z
-ARG MINIO_MC_VERSION=RELEASE.2022-05-04T06-07-55Z
+ARG MINIO_VERSION=RELEASE.2025-09-07T16-13-09Z
+ARG MINIO_MC_VERSION=RELEASE.2025-08-13T08-35-41Z
 ARG AZURITE_VERSION=3.33.0
 ARG GOTESTSUM_VERSION=v1.9.0
 ARG DELVE_VERSION=v1.23.1
 
-ARG GO_VERSION=1.24
-ARG ALPINE_VERSION=3.21
-ARG XX_VERSION=1.6.1
+ARG GO_VERSION=1.25
+ARG ALPINE_VERSION=3.22
+ARG XX_VERSION=1.7.0
 ARG BUILDKIT_DEBUG
 ARG EXPORT_BASE=alpine
 
 # minio for s3 integration tests
-FROM minio/minio:${MINIO_VERSION} AS minio
-FROM minio/mc:${MINIO_MC_VERSION} AS minio-mc
+FROM quay.io/minio/minio:${MINIO_VERSION} AS minio
+FROM quay.io/minio/mc:${MINIO_MC_VERSION} AS minio-mc
 
 # xx is a helper for cross-compilation
 FROM --platform=$BUILDPLATFORM tonistiigi/xx:${XX_VERSION} AS xx
@@ -69,9 +69,10 @@ RUN --mount=target=. <<'EOT'
     exit 1
   }
   set -ex
-  export PKG=github.com/moby/buildkit VERSION=$(git describe --match 'v[0-9]*' --dirty='.m' --always --tags) REVISION=$(git rev-parse HEAD)$(if ! git diff --no-ext-diff --quiet --exit-code; then echo .m; fi);
+  export PKG=github.com/moby/buildkit VERSION=$(git describe --match 'v[0-9]*' --dirty='.m' --always --tags) REVISION=$(git rev-parse HEAD)$(if ! git diff --no-ext-diff --quiet --exit-code; then echo .m; fi) COMMIT_DATE=$(git show -s --format=%cI HEAD);
   echo "-X ${PKG}/version.Version=${VERSION} -X ${PKG}/version.Revision=${REVISION} -X ${PKG}/version.Package=${PKG}" > /tmp/.ldflags;
   echo -n "${VERSION}" > /tmp/.version;
+  echo -n "${COMMIT_DATE}" > /tmp/.commit_date;
 EOT
 
 # buildctl builds test cli binary
@@ -162,10 +163,10 @@ FROM scratch AS cni-plugins-export-squashed
 COPY --from=cni-plugins-export / /
 
 FROM --platform=$BUILDPLATFORM alpine:${ALPINE_VERSION} AS binfmt-filter
-# built from https://github.com/tonistiigi/binfmt/releases/tag/buildkit%2Fv9.2.2-54
-COPY --link --from=tonistiigi/binfmt:buildkit-v9.2.2-54@sha256:e60fbf01e26c75efa816224f4de31c2ef63c5486b20c3e8fa1e5da2aff368ba9 / /out/
+# built from https://github.com/tonistiigi/binfmt/releases/tag/buildkit%2Fv10.0.4-57
+COPY --link --from=tonistiigi/binfmt:buildkit-v10.0.4-57@sha256:370775754cd56094fff210b44968bf15777aed7eb3302df4f7ab2b647630899e / /out/
 WORKDIR /out/
-RUN rm buildkit-qemu-loongarch64 buildkit-qemu-mips64 buildkit-qemu-mips64el
+RUN rm -f buildkit-qemu-loongarch64 buildkit-qemu-mips64 buildkit-qemu-mips64el
 
 FROM scratch AS binaries-linux
 COPY --link --from=runc /usr/bin/runc /buildkit-runc
@@ -195,7 +196,8 @@ WORKDIR /work
 ARG TARGETPLATFORM
 RUN --mount=from=binaries \
   --mount=source=/tmp/.version,target=/tmp/.version,from=buildkit-version \
-  mkdir -p /out && tar czvf "/out/buildkit-$(cat /tmp/.version).$(echo $TARGETPLATFORM | sed 's/\//-/g').tar.gz" --mtime='2015-10-21 00:00Z' --sort=name --transform 's/^./bin/' .
+  --mount=source=/tmp/.commit_date,target=/tmp/.commit_date,from=buildkit-version \
+  mkdir -p /out && tar czvf "/out/buildkit-$(cat /tmp/.version).$(echo $TARGETPLATFORM | sed 's/\//-/g').tar.gz" --mtime="$(cat /tmp/.commit_date)" --sort=name --transform 's/^./bin/' .
 
 FROM scratch AS release
 COPY --link --from=releaser /out/ /
@@ -433,7 +435,7 @@ ENV BUILDKIT_SETUP_CGROUPV2_ROOT=1
 ENV CGO_ENABLED=0
 ENV GOTESTSUM_FORMAT=standard-verbose
 COPY --link --from=gotestsum /out /usr/bin/
-COPY --link --from=minio /opt/bin/minio /usr/bin/
+COPY --link --from=minio /usr/bin/minio /usr/bin/
 COPY --link --from=minio-mc /usr/bin/mc /usr/bin/
 COPY --link --from=nydus /out/nydus-static/* /usr/bin/
 COPY --link --from=stargz-snapshotter /out/* /usr/bin/

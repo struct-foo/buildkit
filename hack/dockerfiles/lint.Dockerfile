@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile-upstream:master
 
-ARG GO_VERSION=1.24
-ARG ALPINE_VERSION=3.21
+ARG GO_VERSION=1.25
+ARG ALPINE_VERSION=3.22
 ARG XX_VERSION=1.6.1
 ARG PROTOLINT_VERSION=0.50.5
 ARG GOLANGCI_LINT_VERSION=v2.1.5
@@ -115,6 +115,27 @@ RUN --mount=target=. \
   done
 EOF
 
+FROM golang-base AS modernize-fix-run
+RUN apk add --no-cache git
+COPY --link --from=xx / /
+ARG TARGETNAME
+ARG TARGETPLATFORM
+WORKDIR /go/src/github.com/moby/buildkit
+RUN --mount=target=.,rw \
+  --mount=target=/root/.cache,type=cache,id=lint-cache-${TARGETNAME}-${TARGETPLATFORM} \
+  --mount=target=/gopls-analyzers,from=gopls,source=/out <<EOF
+  set -ex
+  xx-go --wrap
+  mkdir /out
+  /gopls-analyzers/modernize -fix ./...
+  for file in $(git status --porcelain | awk '/^ M/ {print $2}'); do
+    mkdir -p /out/$(dirname $file)
+    cp $file /out/$file
+  done
+EOF
+
+FROM scratch AS modernize-fix
+COPY --link --from=modernize-fix-run /out /
 
 FROM scratch
 COPY --link --from=golangci-lint /golangci-lint.done /

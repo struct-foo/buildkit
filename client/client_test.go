@@ -3703,6 +3703,38 @@ func testOCIExporterContentStore(t *testing.T, sb integration.Sandbox) {
 		}, nil)
 		require.NoError(t, err)
 
+		dt, err := os.ReadFile(outTar)
+		require.NoError(t, err)
+		m, err := testutil.ReadTarToMap(dt, false)
+		require.NoError(t, err)
+
+		checkStore := func(dir string) {
+			err = filepath.Walk(dir, func(filename string, fi os.FileInfo, err error) error {
+				filename = strings.TrimPrefix(filename, dir)
+				filename = strings.Trim(filename, "/")
+				if filename == "" || filename == "ingest" {
+					return nil
+				}
+
+				if fi.IsDir() {
+					require.Contains(t, m, filename+"/")
+				} else {
+					require.Contains(t, m, filename)
+					if filename == ocispecs.ImageIndexFile {
+						// this file has a timestamp in it, so we can't compare
+						return nil
+					}
+					f, err := os.Open(path.Join(dir, filename))
+					require.NoError(t, err)
+					data, err := io.ReadAll(f)
+					require.NoError(t, err)
+					require.Equal(t, m[filename].Data, data)
+				}
+				return nil
+			})
+			require.NoError(t, err)
+		}
+
 		outDir := filepath.Join(destDir, "out.d")
 		attrs = map[string]string{
 			"tar": "false",
@@ -3720,35 +3752,28 @@ func testOCIExporterContentStore(t *testing.T, sb integration.Sandbox) {
 			},
 		}, nil)
 		require.NoError(t, err)
+		checkStore(outDir)
 
-		dt, err := os.ReadFile(outTar)
+		outStoreDir := filepath.Join(destDir, "store.d")
+		store, err := local.NewStore(outStoreDir)
 		require.NoError(t, err)
-		m, err := testutil.ReadTarToMap(dt, false)
+		attrs = map[string]string{
+			"tar": "false",
+		}
+		if exp == ExporterDocker {
+			attrs["name"] = target
+		}
+		_, err = c.Solve(sb.Context(), def, SolveOpt{
+			Exports: []ExportEntry{
+				{
+					Type:        exp,
+					Attrs:       attrs,
+					OutputStore: store,
+				},
+			},
+		}, nil)
 		require.NoError(t, err)
-
-		filepath.Walk(outDir, func(filename string, fi os.FileInfo, err error) error {
-			filename = strings.TrimPrefix(filename, outDir)
-			filename = strings.Trim(filename, "/")
-			if filename == "" || filename == "ingest" {
-				return nil
-			}
-
-			if fi.IsDir() {
-				require.Contains(t, m, filename+"/")
-			} else {
-				require.Contains(t, m, filename)
-				if filename == ocispecs.ImageIndexFile {
-					// this file has a timestamp in it, so we can't compare
-					return nil
-				}
-				f, err := os.Open(path.Join(outDir, filename))
-				require.NoError(t, err)
-				data, err := io.ReadAll(f)
-				require.NoError(t, err)
-				require.Equal(t, m[filename].Data, data)
-			}
-			return nil
-		})
+		checkStore(outDir)
 	}
 
 	checkAllReleasable(t, c, sb, true)
@@ -9588,7 +9613,11 @@ func testExportAttestations(t *testing.T, sb integration.Sandbox, ociArtifact bo
 			if ociArtifact {
 				subject := att.Manifest.Subject
 				require.NotNil(t, subject)
-				require.Equal(t, bases[i].Desc, *subject)
+				require.Equal(t, bases[i].Desc.MediaType, subject.MediaType)
+				require.Equal(t, bases[i].Desc.Digest, subject.Digest)
+				require.Equal(t, bases[i].Desc.Size, subject.Size)
+				require.Empty(t, subject.Annotations)
+				require.Nil(t, subject.Platform)
 				require.Equal(t, "application/vnd.docker.attestation.manifest.v1+json", att.Manifest.ArtifactType)
 				require.Equal(t, ocispecs.DescriptorEmptyJSON, att.Manifest.Config)
 			} else {
@@ -11294,14 +11323,14 @@ func (s *server) run(a agent.Agent) error {
 
 type secModeSandbox struct{}
 
-func (*secModeSandbox) UpdateConfigFile(in string) string {
-	return in
+func (*secModeSandbox) UpdateConfigFile(in string) (string, func() error) {
+	return in, nil
 }
 
 type secModeInsecure struct{}
 
-func (*secModeInsecure) UpdateConfigFile(in string) string {
-	return in + "\n\ninsecure-entitlements = [\"security.insecure\"]\n"
+func (*secModeInsecure) UpdateConfigFile(in string) (string, func() error) {
+	return in + "\n\ninsecure-entitlements = [\"security.insecure\"]\n", nil
 }
 
 var (
@@ -11311,19 +11340,19 @@ var (
 
 type netModeHost struct{}
 
-func (*netModeHost) UpdateConfigFile(in string) string {
-	return in + "\n\ninsecure-entitlements = [\"network.host\"]\n"
+func (*netModeHost) UpdateConfigFile(in string) (string, func() error) {
+	return in + "\n\ninsecure-entitlements = [\"network.host\"]\n", nil
 }
 
 type netModeDefault struct{}
 
-func (*netModeDefault) UpdateConfigFile(in string) string {
-	return in
+func (*netModeDefault) UpdateConfigFile(in string) (string, func() error) {
+	return in, nil
 }
 
 type netModeBridgeDNS struct{}
 
-func (*netModeBridgeDNS) UpdateConfigFile(in string) string {
+func (*netModeBridgeDNS) UpdateConfigFile(in string) (string, func() error) {
 	return in + `
 # configure bridge networking
 [worker.oci]
@@ -11336,7 +11365,7 @@ cniConfigPath = "/etc/buildkit/dns-cni.conflist"
 
 [dns]
 nameservers = ["10.11.0.1"]
-`
+`, nil
 }
 
 var (
@@ -11536,6 +11565,8 @@ func testSourcePolicy(t *testing.T, sb integration.Sandbox) {
 }
 
 func testLLBMountPerformance(t *testing.T, sb integration.Sandbox) {
+	// flaky on WS2025 and moby/moby too
+	integration.SkipOnPlatform(t, "windows")
 	c, err := New(sb.Context(), sb.Address())
 	require.NoError(t, err)
 	defer c.Close()

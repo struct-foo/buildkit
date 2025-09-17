@@ -339,7 +339,7 @@ type ProvenanceCreator struct {
 	addLayers   func(context.Context) error
 }
 
-func NewProvenanceCreator(ctx context.Context, slsaVersion provenancetypes.ProvenanceSLSA, cp *provenance.Capture, res solver.ResultProxy, attrs map[string]string, j *solver.Job, usage *resources.SysSampler) (*ProvenanceCreator, error) {
+func NewProvenanceCreator(ctx context.Context, slsaVersion provenancetypes.ProvenanceSLSA, cp *provenance.Capture, res solver.ResultProxy, attrs map[string]string, j *solver.Job, usage *resources.SysSampler, customEnv map[string]any) (*ProvenanceCreator, error) {
 	var reproducible bool
 	if v, ok := attrs["reproducible"]; ok {
 		b, err := strconv.ParseBool(v)
@@ -451,6 +451,8 @@ func NewProvenanceCreator(ctx context.Context, slsaVersion provenancetypes.Prove
 		return nil, errors.Errorf("invalid mode %q", mode)
 	}
 
+	pr.Invocation.Environment.ProvenanceCustomEnv = customEnv
+
 	pc := &ProvenanceCreator{
 		pr:          pr,
 		slsaVersion: slsaVersion,
@@ -489,7 +491,7 @@ func (p *ProvenanceCreator) Predicate(ctx context.Context) (any, error) {
 	}
 
 	if p.slsaVersion == provenancetypes.ProvenanceSLSA1 {
-		return provenancetypes.ConvertSLSA02ToSLSA1(p.pr), nil
+		return p.pr.ConvertToSLSA1(), nil
 	}
 
 	return p.pr, nil

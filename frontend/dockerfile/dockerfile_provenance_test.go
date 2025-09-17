@@ -43,6 +43,30 @@ import (
 	"github.com/tonistiigi/fsutil"
 )
 
+var provenanceTests = integration.TestFuncs(
+	testGitProvenanceAttestationSHA1,
+	testGitProvenanceAttestationSHA256,
+	testMultiPlatformProvenance,
+	testClientFrontendProvenance,
+	testClientLLBProvenance,
+	testSecretSSHProvenance,
+	testOCILayoutProvenance,
+	testNilProvenance,
+	testDuplicatePlatformProvenance,
+	testDockerIgnoreMissingProvenance,
+	testCommandSourceMapping,
+	testFrontendDeduplicateSources,
+	testDuplicateLayersProvenance,
+	testProvenanceExportLocal,
+	testProvenanceExportLocalForceSplit,
+	testProvenanceExportLocalMultiPlatform,
+	testProvenanceExportLocalMultiPlatformNoSplit,
+)
+
+func init() {
+	allTests = append(allTests, provenanceTests...)
+}
+
 func testProvenanceAttestation(t *testing.T, sb integration.Sandbox) {
 	workers.CheckFeatureCompat(t, sb, workers.FeatureDirectPush, workers.FeatureProvenance)
 	ctx := sb.Context()
@@ -155,6 +179,11 @@ RUN echo ok> /foo
 				_, isClient := f.(*clientFrontend)
 				_, isGateway := f.(*gatewayFrontend)
 
+				expCustom := provenancetypes.ProvenanceCustomEnv{
+					"foo":     "bar",
+					"numbers": []any{1.0, 2.0, 3.0},
+				}
+
 				if slsaVersion == "v1" {
 					type stmtT struct {
 						Predicate provenancetypes.ProvenancePredicateSLSA1 `json:"predicate"`
@@ -167,6 +196,8 @@ RUN echo ok> /foo
 					require.Equal(t, "", pred.RunDetails.Builder.ID)
 
 					require.Equal(t, "", pred.BuildDefinition.ExternalParameters.ConfigSource.URI)
+
+					require.Equal(t, expCustom, pred.BuildDefinition.InternalParameters.ProvenanceCustomEnv)
 
 					args := pred.BuildDefinition.ExternalParameters.Request.Args
 					if isClient {
@@ -269,6 +300,8 @@ RUN echo ok> /foo
 
 					require.Equal(t, "", pred.Invocation.ConfigSource.URI)
 
+					require.Equal(t, expCustom, pred.Invocation.Environment.ProvenanceCustomEnv)
+
 					args := pred.Invocation.Parameters.Args
 					if isClient {
 						require.Equal(t, "", pred.Invocation.Parameters.Frontend)
@@ -365,7 +398,15 @@ RUN echo ok> /foo
 	}
 }
 
-func testGitProvenanceAttestation(t *testing.T, sb integration.Sandbox) {
+func testGitProvenanceAttestationSHA1(t *testing.T, sb integration.Sandbox) {
+	testGitProvenanceAttestation(t, sb, "sha1")
+}
+
+func testGitProvenanceAttestationSHA256(t *testing.T, sb integration.Sandbox) {
+	testGitProvenanceAttestation(t, sb, "sha256")
+}
+
+func testGitProvenanceAttestation(t *testing.T, sb integration.Sandbox, format string) {
 	integration.SkipOnPlatform(t, "windows")
 	workers.CheckFeatureCompat(t, sb, workers.FeatureDirectPush, workers.FeatureProvenance)
 	ctx := sb.Context()
@@ -399,8 +440,12 @@ COPY myapp.Dockerfile /
 				fstest.CreateFile("myapp.Dockerfile", dockerfile, 0600),
 			)
 
+			initOptions := ""
+			if format == "sha256" {
+				initOptions = " --object-format=sha256"
+			}
 			err = runShell(dir.Name,
-				"git init",
+				"git init"+initOptions,
 				"git config --local user.email test",
 				"git config --local user.name test",
 				"git add myapp.Dockerfile",
@@ -495,7 +540,7 @@ COPY myapp.Dockerfile /
 					require.NotEmpty(t, pred.BuildDefinition.ResolvedDependencies[1].Digest["sha256"])
 
 					require.Equal(t, expectedURL+"/.git#v1", pred.BuildDefinition.ResolvedDependencies[2].URI)
-					require.Equal(t, strings.TrimSpace(string(expectedGitSHA)), pred.BuildDefinition.ResolvedDependencies[2].Digest["sha1"])
+					require.Equal(t, strings.TrimSpace(string(expectedGitSHA)), pred.BuildDefinition.ResolvedDependencies[2].Digest[format])
 				} else {
 					require.Equal(t, 2, len(pred.BuildDefinition.ResolvedDependencies), "%+v", pred.BuildDefinition.ResolvedDependencies)
 
@@ -503,7 +548,7 @@ COPY myapp.Dockerfile /
 					require.NotEmpty(t, pred.BuildDefinition.ResolvedDependencies[0].Digest["sha256"])
 
 					require.Equal(t, expectedURL+"/.git#v1", pred.BuildDefinition.ResolvedDependencies[1].URI)
-					require.Equal(t, strings.TrimSpace(string(expectedGitSHA)), pred.BuildDefinition.ResolvedDependencies[1].Digest["sha1"])
+					require.Equal(t, strings.TrimSpace(string(expectedGitSHA)), pred.BuildDefinition.ResolvedDependencies[1].Digest[format])
 				}
 
 				require.Equal(t, 0, len(pred.BuildDefinition.ExternalParameters.Request.Locals))
@@ -550,7 +595,7 @@ COPY myapp.Dockerfile /
 					require.NotEmpty(t, pred.Materials[1].Digest["sha256"])
 
 					require.Equal(t, expectedURL+"/.git#v1", pred.Materials[2].URI)
-					require.Equal(t, strings.TrimSpace(string(expectedGitSHA)), pred.Materials[2].Digest["sha1"])
+					require.Equal(t, strings.TrimSpace(string(expectedGitSHA)), pred.Materials[2].Digest[format])
 				} else {
 					require.Equal(t, 2, len(pred.Materials), "%+v", pred.Materials)
 
@@ -558,7 +603,7 @@ COPY myapp.Dockerfile /
 					require.NotEmpty(t, pred.Materials[0].Digest["sha256"])
 
 					require.Equal(t, expectedURL+"/.git#v1", pred.Materials[1].URI)
-					require.Equal(t, strings.TrimSpace(string(expectedGitSHA)), pred.Materials[1].Digest["sha1"])
+					require.Equal(t, strings.TrimSpace(string(expectedGitSHA)), pred.Materials[1].Digest[format])
 				}
 
 				require.Equal(t, 0, len(pred.Invocation.Parameters.Locals))
@@ -1735,3 +1780,286 @@ RUN date +%s > /b.txt
 	require.NotNil(t, layers)
 	require.Len(t, layers, 1)
 }
+
+func testProvenanceExportLocal(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureProvenance)
+	ctx := sb.Context()
+
+	c, err := client.New(ctx, sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`
+FROM busybox:latest AS base
+COPY <<EOF /out/foo
+ok
+EOF
+
+FROM scratch
+COPY --from=base /out /
+`)
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	destDir := t.TempDir()
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		FrontendAttrs: map[string]string{
+			"attest:provenance": "mode=max",
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterLocal,
+				OutputDir: destDir,
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err := os.ReadFile(filepath.Join(destDir, "foo"))
+	require.NoError(t, err)
+	require.Equal(t, "ok\n", string(dt))
+
+	dt, err = os.ReadFile(filepath.Join(destDir, "provenance.json"))
+	require.NoError(t, err)
+	require.NotEqual(t, 0, len(dt))
+
+	var pred provenancetypes.ProvenancePredicateSLSA02
+	require.NoError(t, json.Unmarshal(dt, &pred))
+}
+
+func testProvenanceExportLocalForceSplit(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureProvenance)
+	ctx := sb.Context()
+
+	c, err := client.New(ctx, sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`
+FROM busybox:latest AS base
+COPY <<EOF /out/foo
+ok
+EOF
+
+FROM scratch
+COPY --from=base /out /
+`)
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	destDir := t.TempDir()
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		FrontendAttrs: map[string]string{
+			"attest:provenance": "mode=max",
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterLocal,
+				OutputDir: destDir,
+				Attrs: map[string]string{
+					"platform-split": "true",
+				},
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	expPlatform := strings.ReplaceAll(platforms.FormatAll(platforms.DefaultSpec()), "/", "_")
+
+	dt, err := os.ReadFile(filepath.Join(destDir, expPlatform, "foo"))
+	require.NoError(t, err)
+	require.Equal(t, "ok\n", string(dt))
+
+	dt, err = os.ReadFile(filepath.Join(destDir, expPlatform, "provenance.json"))
+	require.NoError(t, err)
+	require.NotEqual(t, 0, len(dt))
+
+	var pred provenancetypes.ProvenancePredicateSLSA02
+	require.NoError(t, json.Unmarshal(dt, &pred))
+}
+
+func testProvenanceExportLocalMultiPlatform(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureMultiPlatform, workers.FeatureProvenance)
+	ctx := sb.Context()
+
+	c, err := client.New(ctx, sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`
+FROM busybox:latest AS base
+COPY <<EOF /out/foo
+ok
+EOF
+
+FROM scratch
+COPY --from=base /out /
+`)
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	destDir := t.TempDir()
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		FrontendAttrs: map[string]string{
+			"attest:provenance": "mode=max",
+			"platform":          "linux/amd64,linux/arm64",
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterLocal,
+				OutputDir: destDir,
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	for _, platform := range []string{"linux_amd64", "linux_arm64"} {
+		dt, err := os.ReadFile(filepath.Join(destDir, platform, "foo"))
+		require.NoError(t, err)
+		require.Equal(t, "ok\n", string(dt))
+
+		dt, err = os.ReadFile(filepath.Join(destDir, platform, "provenance.json"))
+		require.NoError(t, err)
+		require.NotEqual(t, 0, len(dt))
+
+		var pred provenancetypes.ProvenancePredicateSLSA02
+		require.NoError(t, json.Unmarshal(dt, &pred))
+	}
+}
+
+func testProvenanceExportLocalMultiPlatformNoSplit(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureMultiPlatform, workers.FeatureProvenance)
+	ctx := sb.Context()
+
+	c, err := client.New(ctx, sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`
+FROM busybox:latest AS base
+ARG TARGETARCH
+COPY <<EOF /out/foo_${TARGETARCH}
+ok
+EOF
+
+FROM scratch
+COPY --from=base /out /
+`)
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	destDir := t.TempDir()
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		FrontendAttrs: map[string]string{
+			"attest:provenance": "mode=max",
+			"platform":          "linux/amd64,linux/arm64",
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterLocal,
+				OutputDir: destDir,
+				Attrs: map[string]string{
+					"platform-split": "false",
+				},
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	for _, arch := range []string{"amd64", "arm64"} {
+		dt, err := os.ReadFile(filepath.Join(destDir, "foo_"+arch))
+		require.NoError(t, err)
+		require.Equal(t, "ok\n", string(dt))
+
+		dt, err = os.ReadFile(filepath.Join(destDir, "provenance.linux_"+arch+".json"))
+		require.NoError(t, err)
+		require.NotEqual(t, 0, len(dt))
+
+		var pred provenancetypes.ProvenancePredicateSLSA02
+		require.NoError(t, json.Unmarshal(dt, &pred))
+	}
+}
+
+type provenanceEnvSimple struct{}
+
+func (*provenanceEnvSimple) UpdateConfigFile(in string) (string, func() error) {
+	dir, err := os.MkdirTemp("", "provenanceenv")
+	if err != nil {
+		panic(err)
+	}
+	dt, err := json.Marshal(map[string]any{
+		"foo": "bar",
+	})
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "foo.json"), dt, 0600); err != nil {
+		panic(err)
+	}
+	dt, err = json.Marshal(map[string]any{
+		"numbers": []int{1, 2, 3},
+	})
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "numbers.json"), dt, 0600); err != nil {
+		panic(err)
+	}
+
+	// make all paths readable for the rootless user
+	if err := os.Chmod(dir, 0755); err != nil {
+		panic(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "foo.json"), 0644); err != nil {
+		panic(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "numbers.json"), 0644); err != nil {
+		panic(err)
+	}
+
+	in = in + fmt.Sprintf("\n\nprovenanceEnvDir = %q\n", dir)
+
+	return in, func() error {
+		return os.RemoveAll(dir)
+	}
+}
+
+var (
+	provenanceEnvSimpleConfig integration.ConfigUpdater = &provenanceEnvSimple{}
+)
